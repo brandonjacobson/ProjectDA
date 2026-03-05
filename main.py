@@ -112,8 +112,21 @@ class Bot:
             symbol=symbol,
             binance_move_pct=move_pct,
             poly_prices=self.polymarket.prices,
+            binance_price=price,
         )
         if signal is None:
+            return
+
+        # Pre-trade sanity check: refuse entries outside the genuine uncertainty zone.
+        # Prices near 0 or 1 mean the market is nearly resolved — wrong market or
+        # expired window. This is a final safety net in case market discovery
+        # slips through with a stale token.
+        if not (0.35 <= signal.poly_price <= 0.65):
+            logger.warning(
+                f"Trade rejected — entry price {signal.poly_price:.4f} outside "
+                f"safe range [0.35, 0.65] for {signal.symbol} {signal.direction.upper()}. "
+                f"Market may be nearly resolved. Skipping."
+            )
             return
 
         # Risk check
@@ -189,35 +202,130 @@ class Bot:
         return True
 
     async def _discover_markets(self) -> dict:
-        """Try to discover current 15-min BTC/ETH/SOL market token IDs via Gamma API."""
+        """
+        Discover current 15-min BTC/ETH/SOL market token IDs via Gamma API slug lookup.
+
+        Slugs follow the pattern  {coin}-updown-15m-{unix_timestamp}  where the
+        timestamp is the UTC start of the current 15-minute window.  We try the
+        current window, the next window, and the previous window so we always
+        land on one that is still acceptingOrders.
+        """
+        from datetime import datetime, timezone
+
+        COIN_SLUGS = {
+            "BTC": "btc-updown-15m",
+            "ETH": "eth-updown-15m",
+            "SOL": "sol-updown-15m",
+        }
+
+        now = datetime.now(timezone.utc)
+        minute = (now.minute // 15) * 15
+        current_window = now.replace(minute=minute, second=0, microsecond=0)
+        current_ts = int(current_window.timestamp())
+        candidates = [current_ts, current_ts + 900, current_ts - 900]
+
+        token_ids: dict[str, dict[str, str]] = {}
+
         try:
             import aiohttp
-            gamma_url = "https://gamma-api.polymarket.com/markets"
-            params = {"active": "true", "limit": 500}
-            async with aiohttp.ClientSession() as session:
-                async with session.get(gamma_url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as r:
-                    if r.status != 200:
-                        return {}
-                    markets = await r.json()
-
-            token_ids: dict[str, dict[str, str]] = {}
-            for m in markets:
-                question = (m.get("question") or "").lower()
+            headers = {"User-Agent": "ProjectDA/1.0", "Accept": "application/json"}
+            async with aiohttp.ClientSession(headers=headers) as session:
                 for sym in settings.SYMBOLS:
-                    if sym.lower() in question and "15" in question:
-                        direction = None
-                        if "higher" in question or "up" in question or "above" in question:
-                            direction = "up"
-                        elif "lower" in question or "down" in question or "below" in question:
-                            direction = "down"
-                        if direction:
-                            clob_token_ids = m.get("clobTokenIds") or []
-                            if clob_token_ids:
-                                token_ids.setdefault(sym, {})[direction] = clob_token_ids[0]
-            return token_ids
+                    prefix = COIN_SLUGS.get(sym)
+                    if not prefix:
+                        continue
+                    for ts in candidates:
+                        slug = f"{prefix}-{ts}"
+                        url = f"https://gamma-api.polymarket.com/markets/slug/{slug}"
+                        try:
+                            async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as r:
+                                if r.status != 200:
+                                    continue
+                                m = await r.json(content_type=None)
+                            if not m or not m.get("acceptingOrders"):
+                                continue
+                            # Map outcomes → token IDs  (outcomes[0]="Up", outcomes[1]="Down")
+                            raw_ids = m.get("clobTokenIds") or []
+                            if isinstance(raw_ids, str):
+                                import json as _json
+                                raw_ids = _json.loads(raw_ids)
+                            raw_outcomes = m.get("outcomes") or ["Up", "Down"]
+                            if isinstance(raw_outcomes, str):
+                                import json as _json
+                                raw_outcomes = _json.loads(raw_outcomes)
+                            sym_tokens: dict[str, str] = {}
+                            for i, outcome in enumerate(raw_outcomes):
+                                if i < len(raw_ids):
+                                    sym_tokens[str(outcome).lower()] = raw_ids[i]
+                            if "up" in sym_tokens and "down" in sym_tokens:
+                                # --- Price filter: only trade near-open markets ---
+                                # Markets near expiry have prices like 0.001/0.999.
+                                # Only accept a market if the UP price is 0.40–0.60
+                                # (genuine uncertainty zone near window open).
+                                raw_prices = m.get("outcomePrices") or '["0.5","0.5"]'
+                                if isinstance(raw_prices, str):
+                                    import json as _json
+                                    raw_prices = _json.loads(raw_prices)
+                                up_idx = next(
+                                    (i for i, o in enumerate(raw_outcomes)
+                                     if str(o).lower() == "up"), 0
+                                )
+                                up_price = float(raw_prices[up_idx]) if up_idx < len(raw_prices) else 0.5
+                                if not (0.40 <= up_price <= 0.60):
+                                    logger.info(
+                                        f"Skipping {sym} market (UP price={up_price:.3f} "
+                                        f"outside [0.40, 0.60] — market nearly resolved): "
+                                        f"{m.get('question','')[:50]}"
+                                    )
+                                    continue  # try next candidate timestamp
+
+                                token_ids[sym] = sym_tokens
+
+                                # Seed polymarket prices so strategy has real numbers
+                                # before the first WS book event arrives
+                                for i, outcome in enumerate(raw_outcomes):
+                                    if i < len(raw_ids) and i < len(raw_prices):
+                                        tid = raw_ids[i]
+                                        p = float(raw_prices[i])
+                                        self.polymarket.prices[tid] = p
+                                        logger.info(
+                                            f"Seeded {sym} {str(outcome).upper()} price={p:.4f} "
+                                            f"from Gamma (token {tid[:12]}…)"
+                                        )
+
+                                logger.info(
+                                    f"Discovered {sym} market: {m.get('question','')[:60]} "
+                                    f"(up={raw_ids[0][:12]}… down={raw_ids[1][:12]}…)"
+                                )
+                                break  # found a valid near-0.50 market for this symbol
+                        except Exception as e:
+                            logger.debug(f"Slug lookup {slug}: {e}")
+                            continue
         except Exception as e:
             logger.warning(f"Market discovery error: {e}")
-            return {}
+
+        if not token_ids:
+            logger.warning("Market discovery: no accepting markets found for any symbol")
+        return token_ids
+
+    # ------------------------------------------------------------------
+    # Periodic market refresh (15-min markets expire and rotate)
+    # ------------------------------------------------------------------
+
+    async def _refresh_markets_loop(self) -> None:
+        """Re-discover token IDs every 10 minutes so we track the live window."""
+        while not self._stop_event.is_set():
+            await asyncio.sleep(600)  # 10 minutes
+            logger.info("Refreshing 15-min market token IDs...")
+            token_ids = await self._discover_markets()
+            if token_ids:
+                self.strategy.update_token_ids(token_ids)
+                all_ids = [tid for market in token_ids.values() for tid in market.values()]
+                self.polymarket.token_ids = all_ids
+                await self.polymarket.resubscribe()
+                logger.info(f"Market refresh complete — tracking {len(all_ids)} tokens")
+            else:
+                logger.warning("Market refresh found no accepting markets — retrying next cycle")
 
     # ------------------------------------------------------------------
     # Daily summary scheduler
@@ -260,6 +368,7 @@ class Bot:
             asyncio.create_task(self.polymarket.run(), name="poly_feed"),
             asyncio.create_task(self.dashboard.run(), name="dashboard"),
             asyncio.create_task(self._schedule_daily_summary(), name="daily_summary"),
+            asyncio.create_task(self._refresh_markets_loop(), name="market_refresh"),
         ]
 
         logger.info("All tasks started — bot is running")
