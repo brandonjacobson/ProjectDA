@@ -17,7 +17,7 @@ POLY_API_PASSPHRASE: str = os.getenv("POLY_API_PASSPHRASE", "")
 
 # --- WebSocket endpoints ---
 POLY_WS_URL: str = "wss://ws-live-data.polymarket.com"
-BINANCE_WS_URL: str = "wss://stream.binance.com:9443/stream"
+BINANCE_WS_URL: str = "wss://stream.binance.us:9443/stream"
 
 # --- Markets to monitor ---
 SYMBOLS: list[str] = ["BTC", "ETH", "SOL"]

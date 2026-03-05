@@ -11,7 +11,7 @@ from websockets.exceptions import ConnectionClosed
 
 logger = logging.getLogger(__name__)
 
-BINANCE_WS_BASE = "wss://stream.binance.com:9443/stream"
+BINANCE_WS_BASE = "wss://stream.binance.us:9443/stream"
 MAX_RECONNECT_DELAY = 60
 INITIAL_RECONNECT_DELAY = 1
 PRICE_HISTORY_LEN = 120  # keep 2 minutes of ticks
