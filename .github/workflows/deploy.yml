@@ -1,0 +1,38 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    needs: []   # deploy runs independently; tests are enforced by branch protection
+
+    steps:
+      - name: SSH into Oracle and restart bot
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.ORACLE_HOST }}
+          username: ${{ secrets.ORACLE_USER }}
+          key: ${{ secrets.ORACLE_SSH_KEY }}
+          port: ${{ secrets.ORACLE_PORT || 22 }}
+          script: |
+            set -e
+            cd ~/ProjectDA
+
+            # Pull latest code
+            git pull --ff-only origin main
+
+            # Activate venv and sync dependencies
+            source venv/bin/activate
+            pip install -q -r requirements.txt
+
+            # Restart the systemd service
+            sudo systemctl restart projectda.service
+
+            # Confirm it came back up
+            sleep 3
+            sudo systemctl is-active --quiet projectda.service \
+              && echo "Bot restarted successfully" \
+              || (echo "ERROR: service failed to start" && sudo journalctl -u projectda.service -n 30 && exit 1)
