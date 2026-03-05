@@ -77,17 +77,24 @@ def generate_comparison_report(
     ]
 
     metrics = [
-        ("Signals attempted",    lambda r: str(r.num_trades + r.attempted_signals)),
-        ("Trades filled",        lambda r: str(r.num_trades)),
-        ("Fill rate",            lambda r: f"{r.fill_rate:.1%}"),
-        ("Win rate",             lambda r: f"{r.win_rate:.1%}"),
-        ("Total PnL",            lambda r: f"${r.total_pnl:+.2f}"),
-        ("Avg PnL / trade",      lambda r: f"${r.avg_pnl:+.2f}"),
-        ("Avg edge (pre-fill)",  lambda r: f"{r.avg_edge_pre_impact:.3f}"),
-        ("Avg edge (post-fill)", lambda r: f"{r.avg_edge_post_impact:.3f}"),
-        ("Profit factor",        lambda r: f"{r.profit_factor:.2f}" if r.trades else "N/A"),
-        ("Max drawdown",         lambda r: f"${r.max_drawdown:.2f}"),
-        ("Sharpe (ann.)",        lambda r: f"{r.sharpe_ratio:.2f}" if len(r.trades) > 1 else "N/A"),
+        ("Signals attempted",         lambda r: str(r.num_trades + r.attempted_signals)),
+        ("Trades filled",             lambda r: str(r.num_trades)),
+        ("Fill rate",                 lambda r: f"{r.fill_rate:.1%}"),
+        ("Win rate",                  lambda r: f"{r.win_rate:.1%}"),
+        ("**Total PnL (gross)**",     lambda r: f"**${r.total_pnl:+.2f}**"),
+        ("Total fees paid",           lambda r: f"${r.total_fees_paid:.2f}"),
+        ("**Total PnL (net)**",       lambda r: f"**${r.total_pnl_net:+.2f}**"),
+        ("Fee drag",                  lambda r: f"{r.total_fees_paid / max(abs(r.total_pnl), 0.01):.1%} of gross"),
+        ("Avg PnL / trade (gross)",   lambda r: f"${r.avg_pnl:+.2f}"),
+        ("Avg PnL / trade (net)",     lambda r: f"${r.avg_pnl_net:+.2f}"),
+        ("Avg edge (pre-fill)",       lambda r: f"{r.avg_edge_pre_impact:.3f}"),
+        ("Avg edge (post-fill)",      lambda r: f"{r.avg_edge_post_impact:.3f}"),
+        ("Profit factor (gross)",     lambda r: f"{r.profit_factor:.2f}" if r.trades else "N/A"),
+        ("Profit factor (net)",       lambda r: f"{r.profit_factor_net:.2f}" if r.trades else "N/A"),
+        ("Max drawdown (gross)",      lambda r: f"${r.max_drawdown:.2f}"),
+        ("Max drawdown (net)",        lambda r: f"${r.max_drawdown_net:.2f}"),
+        ("Sharpe gross (ann.)",       lambda r: f"{r.sharpe_ratio:.2f}" if len(r.trades) > 1 else "N/A"),
+        ("Sharpe net (ann.)",         lambda r: f"{r.sharpe_ratio_net:.2f}" if len(r.trades) > 1 else "N/A"),
     ]
 
     for label, fn in metrics:
@@ -99,18 +106,20 @@ def generate_comparison_report(
         "",
         "---",
         "",
-        "## PnL Impact of Execution Realism",
+        "## PnL Impact of Execution Realism + Fees",
         "",
         "```",
     ]
-    max_pnl = max((s.total_pnl for s in scenarios), default=1.0)
-    bar_width = 40
+    bar_width = 38
+    # Use gross of optimistic as scale so all bars are proportional
+    scale = max((s.total_pnl for s in scenarios), default=1.0)
     for s in scenarios:
-        pnl = s.total_pnl
-        filled_bars = int(max(pnl / max_pnl, 0) * bar_width) if max_pnl > 0 else 0
-        bar = "█" * filled_bars + "░" * (bar_width - filled_bars)
         label = s.scenario_name.capitalize().ljust(12)
-        lines.append(f"{label} |{bar}| ${pnl:+.2f}")
+        for tag, pnl in (("gross", s.total_pnl), ("net  ", s.total_pnl_net)):
+            filled = int(max(pnl / scale, 0) * bar_width) if scale > 0 else 0
+            bar = "█" * filled + "░" * (bar_width - filled)
+            lines.append(f"{label} {tag} |{bar}| ${pnl:+.2f}")
+        lines.append("")
     lines.append("```")
 
     # Per-scenario detail sections
@@ -184,16 +193,16 @@ def _scenario_detail(result: BacktestResult) -> list[str]:
         "",
         "### Trade Log",
         "",
-        "| # | Date | Min | Dir | Lagged | Fill | Edge→Fill | Conf | Binance% | Result | PnL |",
-        "|---|------|-----|-----|--------|------|-----------|------|----------|--------|-----|",
+        "| # | Date | Min | Dir | Fill | Edge→Post | Result | Gross | Fees | Net |",
+        "|---|------|-----|-----|------|-----------|--------|-------|------|-----|",
     ]
     for i, t in enumerate(result.trades, 1):
         lines.append(
             f"| {i} | {_fmt_date(t.window_start)} | {t.minute_entered} "
-            f"| {t.direction.upper()} | {t.entry_price:.3f} | {t.actual_fill_price:.3f} "
-            f"| {t.edge_at_entry:.3f}→{t.edge_after_impact:.3f} | {t.confidence:.2f} "
-            f"| {t.binance_move_pct:+.3%} "
-            f"| {'✅' if t.correct_direction else '❌'} | ${t.pnl:+.4f} |"
+            f"| {t.direction.upper()} | {t.actual_fill_price:.3f} "
+            f"| {t.edge_at_entry:.3f}→{t.edge_after_impact:.3f} "
+            f"| {'✅' if t.correct_direction else '❌'} "
+            f"| ${t.pnl:+.2f} | ${t.fees_paid:.2f} | ${t.pnl_net:+.2f} |"
         )
 
     # Direction breakdown

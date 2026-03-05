@@ -74,7 +74,9 @@ class BacktestTrade:
     resolution: float            # 1.0 (YES paid) or 0.0 (NO)
     pnl_per_dollar: float        # (resolution - actual_fill_price) / actual_fill_price
     position_size: float         # USDC notional
-    pnl: float                   # absolute PnL
+    pnl: float                   # gross PnL (before fees)
+    fees_paid: float             # entry fee + exit fee in USDC
+    pnl_net: float               # net PnL after fees
 
     @property
     def won(self) -> bool:
@@ -125,10 +127,24 @@ class BacktestResult:
         return sum(t.pnl for t in self.trades)
 
     @property
+    def total_fees_paid(self) -> float:
+        return sum(t.fees_paid for t in self.trades)
+
+    @property
+    def total_pnl_net(self) -> float:
+        return sum(t.pnl_net for t in self.trades)
+
+    @property
     def avg_pnl(self) -> float:
         if not self.trades:
             return 0.0
         return self.total_pnl / len(self.trades)
+
+    @property
+    def avg_pnl_net(self) -> float:
+        if not self.trades:
+            return 0.0
+        return self.total_pnl_net / len(self.trades)
 
     @property
     def avg_edge_pre_impact(self) -> float:
@@ -148,41 +164,52 @@ class BacktestResult:
             return 0.0
         return sum(t.confidence for t in self.trades) / len(self.trades)
 
-    @property
-    def sharpe_ratio(self) -> float:
-        if len(self.trades) < 2:
+    def _sharpe(self, pnls: list) -> float:
+        if len(pnls) < 2:
             return 0.0
         import statistics
-        pnls = [t.pnl for t in self.trades]
         mean = statistics.mean(pnls)
         stdev = statistics.stdev(pnls)
-        if stdev == 0:
-            return 0.0
-        return mean / stdev * (252 ** 0.5)  # annualised by trade count
+        return 0.0 if stdev == 0 else mean / stdev * (252 ** 0.5)
+
+    def _max_drawdown(self, pnls: list) -> float:
+        peak = drawdown = running = 0.0
+        for p in pnls:
+            running += p
+            peak = max(peak, running)
+            drawdown = max(drawdown, peak - running)
+        return drawdown
+
+    def _profit_factor(self, pnls: list) -> float:
+        wins = sum(p for p in pnls if p > 0)
+        losses = abs(sum(p for p in pnls if p < 0))
+        if losses == 0:
+            return float("inf") if wins > 0 else 0.0
+        return wins / losses
+
+    @property
+    def sharpe_ratio(self) -> float:
+        return self._sharpe([t.pnl for t in self.trades])
+
+    @property
+    def sharpe_ratio_net(self) -> float:
+        return self._sharpe([t.pnl_net for t in self.trades])
 
     @property
     def max_drawdown(self) -> float:
-        if not self.trades:
-            return 0.0
-        peak = 0.0
-        drawdown = 0.0
-        running = 0.0
-        for t in self.trades:
-            running += t.pnl
-            if running > peak:
-                peak = running
-            dd = peak - running
-            if dd > drawdown:
-                drawdown = dd
-        return drawdown
+        return self._max_drawdown([t.pnl for t in self.trades])
+
+    @property
+    def max_drawdown_net(self) -> float:
+        return self._max_drawdown([t.pnl_net for t in self.trades])
 
     @property
     def profit_factor(self) -> float:
-        gross_win = sum(t.pnl for t in self.trades if t.pnl > 0)
-        gross_loss = abs(sum(t.pnl for t in self.trades if t.pnl < 0))
-        if gross_loss == 0:
-            return float("inf") if gross_win > 0 else 0.0
-        return gross_win / gross_loss
+        return self._profit_factor([t.pnl for t in self.trades])
+
+    @property
+    def profit_factor_net(self) -> float:
+        return self._profit_factor([t.pnl_net for t in self.trades])
 
     def pnl_by_day(self) -> dict[str, float]:
         daily: dict[str, float] = {}
@@ -223,6 +250,9 @@ class Backtester:
         market_impact_pct: float = 0.0,
         fill_probability: float = 1.0,
         random_seed: int = 42,
+        # Fees
+        fee_entry_pct: float = 0.02,   # 2% on USDC spent at entry
+        fee_exit_pct: float = 0.02,    # 2% on payout received at exit
     ):
         self.threshold_pct = threshold_pct
         self.min_confidence = min_confidence
@@ -235,6 +265,8 @@ class Backtester:
         self.market_impact_pct = market_impact_pct
         self.fill_probability = fill_probability
         self.random_seed = random_seed
+        self.fee_entry_pct = fee_entry_pct
+        self.fee_exit_pct = fee_exit_pct
 
     def run(
         self,
@@ -388,7 +420,22 @@ class Backtester:
 
                 pnl_per_dollar = (resolution - actual_fill) / actual_fill
                 size = self.max_position_size * min(confidence, 1.0)
-                pnl = size * pnl_per_dollar
+                pnl = size * pnl_per_dollar  # gross (no fees)
+
+                # --- Fee calculation ---
+                # Entry: 2% of size → fewer tokens received
+                # Exit:  2% of payout → only applies when resolution > 0
+                capital_in = size * (1.0 - self.fee_entry_pct)
+                tokens = capital_in / actual_fill
+                gross_payout = tokens * resolution
+                net_payout = (
+                    gross_payout * (1.0 - self.fee_exit_pct)
+                    if resolution > 0 else 0.0
+                )
+                fee_entry = size * self.fee_entry_pct
+                fee_exit = gross_payout * self.fee_exit_pct if resolution > 0 else 0.0
+                fees_paid = fee_entry + fee_exit
+                pnl_net = net_payout - size
 
                 trade = BacktestTrade(
                     window_start=window_start_dt,
@@ -405,6 +452,8 @@ class Backtester:
                     pnl_per_dollar=pnl_per_dollar,
                     position_size=size,
                     pnl=pnl,
+                    fees_paid=fees_paid,
+                    pnl_net=pnl_net,
                 )
                 result.trades.append(trade)
                 last_trade_bar = global_bar
@@ -419,7 +468,10 @@ class Backtester:
         logger.info(
             f"[{self.scenario_name.upper()}] {result.num_trades} filled trades "
             f"({result.attempted_signals} missed fills) over "
-            f"{result.days_tested} days | PnL=${result.total_pnl:+.2f} "
+            f"{result.days_tested} days | "
+            f"PnL gross=${result.total_pnl:+.2f} "
+            f"net=${result.total_pnl_net:+.2f} "
+            f"fees=${result.total_fees_paid:.2f} "
             f"| Win={result.win_rate:.1%}"
         )
         return result

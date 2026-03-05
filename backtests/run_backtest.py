@@ -38,8 +38,11 @@ def _print_summary(label: str, r) -> None:
     print(f"  Signals:    {r.num_trades + r.attempted_signals}  "
           f"Filled: {r.num_trades}  Fill rate: {r.fill_rate:.0%}")
     print(f"  Win rate:   {r.win_rate:.1%}")
-    print(f"  Total PnL:  ${r.total_pnl:+.2f}")
-    print(f"  Max DD:     ${r.max_drawdown:.2f}")
+    print(f"  PnL gross:  ${r.total_pnl:+.2f}")
+    print(f"  Fees paid:  ${r.total_fees_paid:.2f}")
+    print(f"  PnL net:    ${r.total_pnl_net:+.2f}  "
+          f"(fee drag: {r.total_fees_paid / max(abs(r.total_pnl), 0.01):.1%})")
+    print(f"  Max DD net: ${r.max_drawdown_net:.2f}")
     print(f"  Avg edge:   {r.avg_edge_pre_impact:.3f} → {r.avg_edge_post_impact:.3f} (post-fill)")
 
 
