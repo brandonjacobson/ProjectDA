@@ -1,15 +1,29 @@
 """
 Lag Arbitrage Backtester
 
-Simulates the lag arbitrage strategy over historical Binance 1-minute kline data.
+Simulates the lag arbitrage strategy over historical Binance 1-minute kline data
+with configurable execution realism parameters.
 
-For each 15-minute window:
-1. Model fair Polymarket YES prices (binary option formula)
-2. Model lagged Polymarket prices (what the market actually shows, 60s behind)
-3. Run strategy signal detection (same logic as live strategy)
-4. Record trade: enter at lagged price, exit at resolution (0 or 1)
+Execution realism parameters
+-----------------------------
+execution_delay_secs : float
+    Time (seconds) between signal detection and order fill. Models network
+    latency + order routing. During this window, Polymarket starts moving.
+
+market_impact_pct : float  [0.0 – 1.0]
+    Fraction of the edge consumed by other bots front-running the same signal.
+    actual_fill_price = entry_lagged + market_impact_pct * edge
+    0.0 = no impact (we're first), 1.0 = edge fully gone before we fill.
+
+fill_probability : float  [0.0 – 1.0]
+    Probability our order actually gets filled in thin market conditions.
+    Models partial orderbook depth and missed fills.
+
+scenario_name : str
+    Label shown in the report ("optimistic", "realistic", "pessimistic").
 """
 import logging
+import random
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
@@ -23,19 +37,42 @@ COOLDOWN_MINS = 5      # don't re-enter same window type within 5 minutes
 LAG_SECS = 60          # simulated Polymarket lag behind Binance
 SCALING = 10           # fair_value = 0.5 + |move| * scaling (matches live strategy)
 
+# --- Pre-defined scenario configs ---
+
+SCENARIO_OPTIMISTIC = dict(
+    scenario_name="optimistic",
+    execution_delay_secs=0.0,
+    market_impact_pct=0.0,
+    fill_probability=1.0,
+)
+SCENARIO_REALISTIC = dict(
+    scenario_name="realistic",
+    execution_delay_secs=1.5,
+    market_impact_pct=0.30,
+    fill_probability=0.65,
+)
+SCENARIO_PESSIMISTIC = dict(
+    scenario_name="pessimistic",
+    execution_delay_secs=3.0,
+    market_impact_pct=0.60,
+    fill_probability=0.40,
+)
+
 
 @dataclass
 class BacktestTrade:
     window_start: datetime
     minute_entered: int          # which minute bar we entered (1-14)
     direction: str               # "up" or "down"
-    entry_price: float           # lagged Polymarket YES price at entry
-    fair_price_at_entry: float   # what fair value was at entry
-    edge_at_entry: float         # fair_price - entry_price
+    entry_price: float           # lagged Polymarket YES price (pre-impact)
+    actual_fill_price: float     # price actually paid after market impact
+    fair_price_at_entry: float   # what binary option fair value was at entry
+    edge_at_entry: float         # fair_value_strat - entry_price (pre-impact)
+    edge_after_impact: float     # edge remaining after market_impact_pct applied
     confidence: float
     binance_move_pct: float      # 1-min Binance return that triggered signal
-    resolution: float            # 1.0 (YES) or 0.0 (NO)
-    pnl_per_dollar: float        # (resolution - entry_price) / entry_price
+    resolution: float            # 1.0 (YES paid) or 0.0 (NO)
+    pnl_per_dollar: float        # (resolution - actual_fill_price) / actual_fill_price
     position_size: float         # USDC notional
     pnl: float                   # absolute PnL
 
@@ -45,10 +82,7 @@ class BacktestTrade:
 
     @property
     def correct_direction(self) -> bool:
-        if self.direction == "up":
-            return self.resolution == 1.0
         # resolution=1.0 always means "YES token paid" = we were right.
-        # For UP: BTC went up. For DOWN: BTC went down. Both are wins.
         return self.resolution == 1.0
 
 
@@ -60,12 +94,24 @@ class BacktestResult:
     windows_tested: int = 0
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
+    # Scenario metadata
+    scenario_name: str = "optimistic"
+    execution_delay_secs: float = 0.0
+    market_impact_pct: float = 0.0
+    fill_probability: float = 1.0
+    # Tracking
+    attempted_signals: int = 0   # signals that passed edge/confidence but failed fill check
 
     # --- Computed metrics ---
 
     @property
     def num_trades(self) -> int:
         return len(self.trades)
+
+    @property
+    def fill_rate(self) -> float:
+        total = self.num_trades + self.attempted_signals
+        return self.num_trades / total if total > 0 else 0.0
 
     @property
     def win_rate(self) -> float:
@@ -85,16 +131,22 @@ class BacktestResult:
         return self.total_pnl / len(self.trades)
 
     @property
+    def avg_edge_pre_impact(self) -> float:
+        if not self.trades:
+            return 0.0
+        return sum(t.edge_at_entry for t in self.trades) / len(self.trades)
+
+    @property
+    def avg_edge_post_impact(self) -> float:
+        if not self.trades:
+            return 0.0
+        return sum(t.edge_after_impact for t in self.trades) / len(self.trades)
+
+    @property
     def avg_confidence(self) -> float:
         if not self.trades:
             return 0.0
         return sum(t.confidence for t in self.trades) / len(self.trades)
-
-    @property
-    def avg_edge(self) -> float:
-        if not self.trades:
-            return 0.0
-        return sum(t.edge_at_entry for t in self.trades) / len(self.trades)
 
     @property
     def sharpe_ratio(self) -> float:
@@ -106,7 +158,7 @@ class BacktestResult:
         stdev = statistics.stdev(pnls)
         if stdev == 0:
             return 0.0
-        return mean / stdev * (252 ** 0.5)  # annualised
+        return mean / stdev * (252 ** 0.5)  # annualised by trade count
 
     @property
     def max_drawdown(self) -> float:
@@ -150,11 +202,10 @@ class Backtester:
     """
     Runs the lag arbitrage strategy simulation over historical kline data.
 
-    Strategy (mirrors live LagArbitrageStrategy):
-    - For each minute bar in a 15-min window:
-      - 1-min return = (close_now - close_prev) / close_prev
-      - If |1-min return| > threshold AND edge > 0 AND confidence > min_confidence:
-        → enter at lagged_price, exit at resolution
+    Three execution realism scenarios supported (see module-level constants):
+        SCENARIO_OPTIMISTIC  — no impact, always fills (upper bound)
+        SCENARIO_REALISTIC   — 1.5s delay, 30% impact, 65% fill rate
+        SCENARIO_PESSIMISTIC — 3.0s delay, 60% impact, 40% fill rate
     """
 
     def __init__(
@@ -166,6 +217,12 @@ class Backtester:
         daily_vol: float = 0.025,
         lag_secs: int = 60,
         cooldown_mins: int = 5,
+        # Execution realism
+        scenario_name: str = "optimistic",
+        execution_delay_secs: float = 0.0,
+        market_impact_pct: float = 0.0,
+        fill_probability: float = 1.0,
+        random_seed: int = 42,
     ):
         self.threshold_pct = threshold_pct
         self.min_confidence = min_confidence
@@ -173,6 +230,11 @@ class Backtester:
         self.daily_vol = daily_vol
         self.lag_secs = lag_secs
         self.cooldown_mins = cooldown_mins
+        self.scenario_name = scenario_name
+        self.execution_delay_secs = execution_delay_secs
+        self.market_impact_pct = market_impact_pct
+        self.fill_probability = fill_probability
+        self.random_seed = random_seed
 
     def run(
         self,
@@ -180,21 +242,22 @@ class Backtester:
         symbol: str = "BTC",
     ) -> BacktestResult:
         """
-        Run the full backtest.
+        Run the full backtest with configured execution realism parameters.
 
         Args:
-            df_1m: DataFrame with columns [open_time, open, high, low, close, volume]
-                   1-minute bars, sorted ascending, open_time in UTC.
+            df_1m: DataFrame [open_time, open, high, low, close, volume], 1-min UTC bars.
             symbol: "BTC", "ETH", or "SOL"
 
         Returns:
-            BacktestResult with all trades and metrics.
+            BacktestResult
         """
         from backtests.market_model import BinaryMarketModel
 
+        rng = random.Random(self.random_seed)  # deterministic per scenario
+
         if df_1m.empty:
             logger.error("Empty DataFrame — cannot run backtest")
-            return BacktestResult(symbol=symbol)
+            return BacktestResult(symbol=symbol, scenario_name=self.scenario_name)
 
         model = BinaryMarketModel(
             window_secs=WINDOW_MINS * 60,
@@ -202,7 +265,13 @@ class Backtester:
             lag_secs=self.lag_secs,
         )
 
-        result = BacktestResult(symbol=symbol)
+        result = BacktestResult(
+            symbol=symbol,
+            scenario_name=self.scenario_name,
+            execution_delay_secs=self.execution_delay_secs,
+            market_impact_pct=self.market_impact_pct,
+            fill_probability=self.fill_probability,
+        )
         result.start_date = df_1m["open_time"].iloc[0].to_pydatetime()
         result.end_date = df_1m["open_time"].iloc[-1].to_pydatetime()
 
@@ -210,10 +279,12 @@ class Backtester:
         times = df_1m["open_time"].values
         n = len(closes)
 
-        last_trade_bar = -self.cooldown_mins  # track cooldown
+        last_trade_bar = -self.cooldown_mins
         windows_tested = 0
 
-        # Slide a 15-min window over the data
+        # Remaining window time after execution delay (in seconds)
+        exec_delay = self.execution_delay_secs
+
         for w_start in range(0, n - WINDOW_MINS, WINDOW_MINS):
             w_end = w_start + WINDOW_MINS
             window_closes = closes[w_start:w_end].tolist()
@@ -227,20 +298,19 @@ class Backtester:
 
             traded_this_window = False
 
-            for bar in bars[1:]:  # skip minute 0 (no prev bar to compute return)
+            for bar in bars[1:]:
                 if traded_this_window:
                     break
 
                 minute = bar["minute"]
                 global_bar = w_start + minute
 
-                # Cooldown check
                 if global_bar - last_trade_bar < self.cooldown_mins:
                     continue
 
-                # 1-min Binance return (proxy for 60-second momentum)
                 if minute == 0:
                     continue
+
                 prev_close = window_closes[minute - 1]
                 curr_close = window_closes[minute]
                 if prev_close == 0:
@@ -250,9 +320,15 @@ class Backtester:
                 if abs(move_1m) < self.threshold_pct:
                     continue
 
+                # Check enough window time remains after execution delay
+                elapsed_secs = minute * 60
+                remaining_after_fill = (WINDOW_MINS * 60) - elapsed_secs - exec_delay
+                if remaining_after_fill < 60:
+                    # Less than 1 minute remaining after fill — skip
+                    continue
+
                 direction = "up" if move_1m > 0 else "down"
 
-                # UP token prices from model; DOWN token = 1 - UP token
                 if direction == "up":
                     entry_lagged = bar["lagged_price"]
                     entry_fair = bar["fair_price"]
@@ -260,17 +336,11 @@ class Backtester:
                     entry_lagged = 1.0 - bar["lagged_price"]
                     entry_fair = 1.0 - bar["fair_price"]
 
-                # Mirror live strategy edge/confidence logic
-                # fair_value_strat = expected value of the token we're buying
                 fair_value_strat = 0.5 + abs(move_1m) * SCALING
                 fair_value_strat = min(fair_value_strat, 0.95)
                 edge = fair_value_strat - entry_lagged
 
-                # Only trade near-neutral markets (0.40-0.60).
-                # Lag arbitrage captures the price update lag right after window
-                # open — the market should be near 50/50 when we enter.
-                # Entries outside this range mean the market already priced in
-                # the move before we could act.
+                # Only trade near-neutral markets — real lag opportunity zone
                 if edge <= 0 or not (0.40 <= entry_lagged <= 0.60):
                     continue
 
@@ -281,7 +351,32 @@ class Backtester:
                 if confidence < self.min_confidence:
                     continue
 
-                # Determine resolution: did price go in the signalled direction?
+                # --- Execution realism ---
+
+                # 1. Fill probability check — models thin orderbook / missed fills
+                if rng.random() > self.fill_probability:
+                    result.attempted_signals += 1
+                    last_trade_bar = global_bar  # cooldown still burns
+                    traded_this_window = True
+                    continue
+
+                # 2. Market impact — price moves toward fair value during execution delay
+                #    actual_fill = entry_lagged + impact_pct * edge
+                actual_fill = entry_lagged + self.market_impact_pct * edge
+                edge_after_impact = fair_value_strat - actual_fill
+
+                if edge_after_impact <= 0:
+                    # Edge fully consumed — skip (would be a losing fill)
+                    result.attempted_signals += 1
+                    last_trade_bar = global_bar
+                    traded_this_window = True
+                    continue
+
+                # Guard against degenerate fill prices
+                if actual_fill <= 0.001 or actual_fill >= 0.999:
+                    continue
+
+                # --- Resolution ---
                 final_close = window_closes[-1]
                 open_price = window_closes[0]
                 final_return = (final_close - open_price) / open_price
@@ -291,8 +386,7 @@ class Backtester:
                 else:
                     resolution = 1.0 if final_return < 0 else 0.0
 
-                # PnL: we bought YES at entry_lagged, exits at resolution
-                pnl_per_dollar = (resolution - entry_lagged) / entry_lagged
+                pnl_per_dollar = (resolution - actual_fill) / actual_fill
                 size = self.max_position_size * min(confidence, 1.0)
                 pnl = size * pnl_per_dollar
 
@@ -301,8 +395,10 @@ class Backtester:
                     minute_entered=minute,
                     direction=direction,
                     entry_price=entry_lagged,
+                    actual_fill_price=actual_fill,
                     fair_price_at_entry=entry_fair,
                     edge_at_entry=edge,
+                    edge_after_impact=edge_after_impact,
                     confidence=confidence,
                     binance_move_pct=move_1m,
                     resolution=resolution,
@@ -321,7 +417,9 @@ class Backtester:
         result.days_tested = unique_days
 
         logger.info(
-            f"Backtest complete: {result.num_trades} trades over "
-            f"{result.days_tested} days ({result.windows_tested} windows)"
+            f"[{self.scenario_name.upper()}] {result.num_trades} filled trades "
+            f"({result.attempted_signals} missed fills) over "
+            f"{result.days_tested} days | PnL=${result.total_pnl:+.2f} "
+            f"| Win={result.win_rate:.1%}"
         )
         return result

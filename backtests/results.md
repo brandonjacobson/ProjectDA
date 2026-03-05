@@ -1,6 +1,6 @@
-# Lag Arbitrage Backtest — Performance Report
+# Lag Arbitrage Backtest — Execution Realism Analysis
 
-**Generated:** 2026-03-05 04:06 UTC  
+**Generated:** 2026-03-05 04:23 UTC  
 **Symbol:** BTC  
 **Period:** 2026-02-03 → 2026-03-05  
 **Days tested:** 31  
@@ -8,116 +8,202 @@
 
 ---
 
-## Strategy Parameters
+## Why Execution Realism Matters
 
-| Parameter | Value |
-|-----------|-------|
-| Binance move threshold | 0.3% per minute |
-| Lookback window | 60 seconds (1 bar) |
-| Simulated Poly lag | 60 seconds |
-| Min confidence | 0.60 |
-| Scaling factor | 10× |
-| Portfolio size | $1,000 |
-| Max position | 2% ($20) |
-| Market window | 15 minutes |
+The optimistic baseline assumes instant fills at the stale market price.
+In practice, three frictions erode the edge:
 
----
+| Friction | Source | Effect |
+|----------|--------|--------|
+| **Execution delay** | Network latency + order routing | Price starts moving before fill |
+| **Market impact** | Faster bots front-running same signal | Fill price moves toward fair value |
+| **Fill probability** | Thin orderbook depth | Orders sometimes not matched |
 
-## Summary Metrics
-
-| Metric | Value |
-|--------|-------|
-| Total trades | 17 |
-| Win rate (correct direction) | 94.1% |
-| Total PnL | $+280.23 |
-| Avg PnL per trade | $+16.4843 |
-| Avg edge at entry | 0.119 |
-| Avg confidence | 0.71 |
-| Profit factor | 22.95 |
-| Sharpe ratio (ann.) | 30.88 |
-| Max drawdown | $12.77 |
-| Best trade | $+26.55 (2026-02-05) |
-| Worst trade | $-12.77 (2026-02-05) |
+Realistic setup (Oracle Cloud bot): ~500ms–2s delay, 30–60% market impact,
+65% fill rate. Co-located HFT: 50–200ms delay, ~10% impact.
 
 ---
 
-## Daily P&L
+## Scenario Definitions
+
+| Parameter | Optimistic | Realistic | Pessimistic |
+|-----------|-----------|-----------|-------------|
+| Execution delay | 0.0s | 1.5s | 3.0s |
+| Market impact | 0% | 30% | 60% |
+| Fill probability | 100% | 65% | 40% |
+
+---
+
+## Side-by-Side Performance
+
+| Metric | Optimistic | Realistic | Pessimistic |
+|--------|-----------|-----------|-------------|
+| Signals attempted | 16 | 16 | 16 |
+| Trades filled | 16 | 13 | 8 |
+| Fill rate | 100.0% | 81.2% | 50.0% |
+| Win rate | 87.5% | 84.6% | 87.5% |
+| Total PnL | $+208.25 | $+139.53 | $+82.26 |
+| Avg PnL / trade | $+13.02 | $+10.73 | $+10.28 |
+| Avg edge (pre-fill) | 0.111 | 0.116 | 0.123 |
+| Avg edge (post-fill) | 0.111 | 0.081 | 0.049 |
+| Profit factor | 8.89 | 6.29 | 7.08 |
+| Max drawdown | $13.53 | $13.53 | $13.53 |
+| Sharpe (ann.) | 19.38 | 15.72 | 16.70 |
+
+---
+
+## PnL Impact of Execution Realism
+
+```
+Optimistic   |████████████████████████████████████████| $+208.25
+Realistic    |██████████████████████████░░░░░░░░░░░░░░| $+139.53
+Pessimistic  |███████████████░░░░░░░░░░░░░░░░░░░░░░░░░| $+82.26
+```
+
+---
+
+## Optimistic Scenario — Detail
+
+*Execution delay: 0.0s | Market impact: 0% | Fill probability: 100%*
+
+### Daily P&L
 
 | Date | PnL | Cumulative |
 |------|-----|-----------|
-| 2026-02-03 | 🟢 $+23.28 | $+23.28 |
-| 2026-02-05 | 🟢 $+66.49 | $+89.77 |
-| 2026-02-06 | 🟢 $+58.02 | $+147.80 |
-| 2026-02-07 | 🟢 $+33.21 | $+181.01 |
-| 2026-02-09 | 🟢 $+16.92 | $+197.93 |
-| 2026-02-11 | 🟢 $+17.10 | $+215.03 |
-| 2026-02-16 | 🟢 $+15.16 | $+230.19 |
-| 2026-02-17 | 🟢 $+13.92 | $+244.11 |
-| 2026-03-02 | 🟢 $+18.80 | $+262.91 |
-| 2026-03-03 | 🟢 $+17.32 | $+280.23 |
+| 2026-02-03 | 🟢 $+18.04 | $+18.04 |
+| 2026-02-04 | 🔴 $-13.53 | $+4.51 |
+| 2026-02-05 | 🟢 $+34.70 | $+39.21 |
+| 2026-02-06 | 🟢 $+16.23 | $+55.44 |
+| 2026-02-07 | 🟢 $+11.99 | $+67.43 |
+| 2026-02-16 | 🟢 $+15.16 | $+82.59 |
+| 2026-02-24 | 🟢 $+17.15 | $+99.75 |
+| 2026-02-25 | 🟢 $+50.30 | $+150.05 |
+| 2026-02-26 | 🔴 $-12.84 | $+137.20 |
+| 2026-02-28 | 🟢 $+19.57 | $+156.77 |
+| 2026-03-01 | 🟢 $+38.19 | $+194.97 |
+| 2026-03-04 | 🟢 $+13.28 | $+208.25 |
+
+### Trade Log
+
+| # | Date | Min | Dir | Lagged | Fill | Edge→Fill | Conf | Binance% | Result | PnL |
+|---|------|-----|-----|--------|------|-----------|------|----------|--------|-----|
+| 1 | 2026-02-03 | 13 | UP | 0.409 | 0.409 | 0.127→0.127 | 0.62 | +0.362% | ✅ | $+18.0405 |
+| 2 | 2026-02-04 | 4 | UP | 0.403 | 0.403 | 0.137→0.137 | 0.68 | +0.396% | ❌ | $-13.5332 |
+| 3 | 2026-02-05 | 12 | UP | 0.432 | 0.432 | 0.137→0.137 | 0.84 | +0.691% | ✅ | $+22.0503 |
+| 4 | 2026-02-05 | 1 | UP | 0.500 | 0.500 | 0.071→0.071 | 0.63 | +0.712% | ✅ | $+12.6531 |
+| 5 | 2026-02-06 | 3 | DOWN | 0.426 | 0.426 | 0.114→0.114 | 0.60 | -0.399% | ✅ | $+16.2323 |
+| 6 | 2026-02-07 | 2 | UP | 0.504 | 0.504 | 0.066→0.066 | 0.61 | +0.702% | ✅ | $+11.9872 |
+| 7 | 2026-02-16 | 3 | UP | 0.500 | 0.500 | 0.085→0.085 | 0.76 | +0.853% | ✅ | $+15.1640 |
+| 8 | 2026-02-24 | 9 | DOWN | 0.442 | 0.442 | 0.113→0.113 | 0.68 | -0.549% | ✅ | $+17.1523 |
+| 9 | 2026-02-25 | 2 | UP | 0.465 | 0.465 | 0.094→0.094 | 0.64 | +0.592% | ✅ | $+14.7566 |
+| 10 | 2026-02-25 | 12 | DOWN | 0.426 | 0.426 | 0.114→0.114 | 0.60 | -0.396% | ✅ | $+16.1936 |
+| 11 | 2026-02-25 | 4 | UP | 0.407 | 0.407 | 0.133→0.133 | 0.67 | +0.401% | ✅ | $+19.3515 |
+| 12 | 2026-02-26 | 7 | DOWN | 0.419 | 0.419 | 0.123→0.123 | 0.64 | -0.420% | ❌ | $-12.8441 |
+| 13 | 2026-02-28 | 12 | DOWN | 0.408 | 0.408 | 0.133→0.133 | 0.67 | -0.413% | ✅ | $+19.5703 |
+| 14 | 2026-03-01 | 10 | UP | 0.408 | 0.408 | 0.144→0.144 | 0.77 | +0.520% | ✅ | $+22.3478 |
+| 15 | 2026-03-01 | 5 | UP | 0.511 | 0.511 | 0.098→0.098 | 0.83 | +1.087% | ✅ | $+15.8457 |
+| 16 | 2026-03-04 | 3 | UP | 0.480 | 0.480 | 0.081→0.081 | 0.61 | +0.614% | ✅ | $+13.2785 |
+
+### Direction Breakdown
+
+| Dir | Trades | Wins | Win% | PnL |
+|-----|--------|------|------|-----|
+| UP | 11 | 10 | 90.9% | $+151.94 |
+| DOWN | 5 | 4 | 80.0% | $+56.30 |
 
 ---
 
-## Trade Log
+## Realistic Scenario — Detail
 
-| # | Date | Min | Dir | Entry | Fair | Edge | Conf | Binance% | Resolution | PnL |
-|---|------|-----|-----|-------|------|------|------|----------|------------|-----|
-| 1 | 2026-02-03 | 5 | DOWN | 0.404 | 0.920 | 0.149 | 0.79 | -0.529% | ✅ 1 | $+23.2796 |
-| 2 | 2026-02-05 | 4 | UP | 0.406 | 0.801 | 0.131 | 0.64 | +0.366% | ❌ 0 | $-12.7683 |
-| 3 | 2026-02-05 | 4 | DOWN | 0.415 | 0.980 | 0.165 | 0.94 | -0.794% | ✅ 1 | $+26.5465 |
-| 4 | 2026-02-05 | 11 | DOWN | 0.419 | 0.968 | 0.123 | 0.64 | -0.421% | ✅ 1 | $+17.7992 |
-| 5 | 2026-02-05 | 9 | DOWN | 0.404 | 0.978 | 0.152 | 0.81 | -0.561% | ✅ 1 | $+23.9593 |
-| 6 | 2026-02-05 | 2 | UP | 0.557 | 0.980 | 0.057 | 0.69 | +1.144% | ✅ 1 | $+10.9574 |
-| 7 | 2026-02-06 | 3 | UP | 0.407 | 0.892 | 0.145 | 0.77 | +0.518% | ✅ 1 | $+22.4381 |
-| 8 | 2026-02-06 | 8 | DOWN | 0.419 | 0.882 | 0.118 | 0.60 | -0.374% | ✅ 1 | $+16.6908 |
-| 9 | 2026-02-06 | 3 | UP | 0.413 | 0.834 | 0.129 | 0.66 | +0.420% | ✅ 1 | $+18.8941 |
-| 10 | 2026-02-07 | 4 | UP | 0.462 | 0.977 | 0.108 | 0.75 | +0.702% | ✅ 1 | $+17.4186 |
-| 11 | 2026-02-07 | 7 | UP | 0.433 | 0.904 | 0.110 | 0.60 | +0.424% | ✅ 1 | $+15.7941 |
-| 12 | 2026-02-09 | 1 | UP | 0.500 | 0.980 | 0.104 | 0.85 | +1.039% | ✅ 1 | $+16.9234 |
-| 13 | 2026-02-11 | 4 | DOWN | 0.414 | 0.797 | 0.122 | 0.60 | -0.355% | ✅ 1 | $+17.0963 |
-| 14 | 2026-02-16 | 5 | UP | 0.500 | 0.980 | 0.085 | 0.76 | +0.853% | ✅ 1 | $+15.1640 |
-| 15 | 2026-02-17 | 2 | DOWN | 0.500 | 0.980 | 0.078 | 0.70 | -0.783% | ✅ 1 | $+13.9177 |
-| 16 | 2026-03-02 | 10 | UP | 0.404 | 0.904 | 0.132 | 0.64 | +0.355% | ✅ 1 | $+18.7987 |
-| 17 | 2026-03-03 | 10 | UP | 0.410 | 0.892 | 0.124 | 0.60 | +0.337% | ✅ 1 | $+17.3238 |
+*Execution delay: 1.5s | Market impact: 30% | Fill probability: 65%*
 
----
+### Daily P&L
 
-## Signal Distribution
+| Date | PnL | Cumulative |
+|------|-----|-----------|
+| 2026-02-03 | 🟢 $+15.44 | $+15.44 |
+| 2026-02-04 | 🔴 $-13.53 | $+1.91 |
+| 2026-02-05 | 🟢 $+30.30 | $+32.21 |
+| 2026-02-24 | 🟢 $+14.97 | $+47.18 |
+| 2026-02-25 | 🟢 $+43.72 | $+90.90 |
+| 2026-02-26 | 🔴 $-12.84 | $+78.06 |
+| 2026-02-28 | 🟢 $+16.62 | $+94.67 |
+| 2026-03-01 | 🟢 $+32.81 | $+127.48 |
+| 2026-03-04 | 🟢 $+12.04 | $+139.53 |
 
-| Direction | Trades | Wins | Win Rate | Total PnL |
-|-----------|--------|------|----------|-----------|
-| UP  | 10 | 9 | 90.0% | $+140.94 |
-| DOWN | 7 | 7 | 100.0% | $+139.29 |
+### Trade Log
 
-### Entry Minute Distribution
+| # | Date | Min | Dir | Lagged | Fill | Edge→Fill | Conf | Binance% | Result | PnL |
+|---|------|-----|-----|--------|------|-----------|------|----------|--------|-----|
+| 1 | 2026-02-03 | 13 | UP | 0.409 | 0.447 | 0.127→0.089 | 0.62 | +0.362% | ✅ | $+15.4389 |
+| 2 | 2026-02-04 | 4 | UP | 0.403 | 0.444 | 0.137→0.096 | 0.68 | +0.396% | ❌ | $-13.5332 |
+| 3 | 2026-02-05 | 12 | UP | 0.432 | 0.473 | 0.137→0.096 | 0.84 | +0.691% | ✅ | $+18.6836 |
+| 4 | 2026-02-05 | 1 | UP | 0.500 | 0.521 | 0.071→0.050 | 0.63 | +0.712% | ✅ | $+11.6167 |
+| 5 | 2026-02-24 | 9 | DOWN | 0.442 | 0.476 | 0.113→0.079 | 0.68 | -0.549% | ✅ | $+14.9706 |
+| 6 | 2026-02-25 | 2 | UP | 0.465 | 0.493 | 0.094→0.066 | 0.64 | +0.592% | ✅ | $+13.1808 |
+| 7 | 2026-02-25 | 12 | DOWN | 0.426 | 0.460 | 0.114→0.080 | 0.60 | -0.396% | ✅ | $+14.0972 |
+| 8 | 2026-02-25 | 4 | UP | 0.407 | 0.447 | 0.133→0.093 | 0.67 | +0.401% | ✅ | $+16.4448 |
+| 9 | 2026-02-26 | 7 | DOWN | 0.419 | 0.456 | 0.123→0.086 | 0.64 | -0.420% | ❌ | $-12.8441 |
+| 10 | 2026-02-28 | 12 | DOWN | 0.408 | 0.448 | 0.133→0.093 | 0.67 | -0.413% | ✅ | $+16.6173 |
+| 11 | 2026-03-01 | 10 | UP | 0.408 | 0.451 | 0.144→0.101 | 0.77 | +0.520% | ✅ | $+18.7294 |
+| 12 | 2026-03-01 | 5 | UP | 0.511 | 0.540 | 0.098→0.069 | 0.83 | +1.087% | ✅ | $+14.0825 |
+| 13 | 2026-03-04 | 3 | UP | 0.480 | 0.504 | 0.081→0.057 | 0.61 | +0.614% | ✅ | $+12.0411 |
 
-| Minute in Window | # Signals |
-|-----------------|-----------|
-| 1 | 1 |
-| 2 | 2 |
-| 3 | 2 |
-| 4 | 4 |
-| 5 | 2 |
-| 7 | 1 |
-| 8 | 1 |
-| 9 | 1 |
-| 10 | 2 |
-| 11 | 1 |
+### Direction Breakdown
+
+| Dir | Trades | Wins | Win% | PnL |
+|-----|--------|------|------|-----|
+| UP | 9 | 8 | 88.9% | $+106.68 |
+| DOWN | 4 | 3 | 75.0% | $+32.84 |
 
 ---
 
-## Notes
+## Pessimistic Scenario — Detail
 
-- **Price model:** Binary option (normal CDF). Fair price = N(return / σ_remaining).
-- **Entry price:** Lagged Polymarket price (60s behind Binance fair value).
-- **Exit:** At market resolution — 1.0 if correct direction, 0.0 if wrong.
-- **Cooldown:** 5 minutes between signals per symbol.
-- **Gamma API:** Queried for resolved BTC market metadata (informational only).
-- **Small sample warning:** N<30 trades. Win rate and Sharpe are not statistically
-  reliable at this sample size. Extend to 90+ days for meaningful estimates.
-- **Sharpe note:** Calculated on trade-level PnL (not daily time-series).
-  With few trades this is highly sensitive to outliers.
-- **Limitations:** Synthetic model — real Polymarket prices may differ from model.
-  Slippage, maker/taker fees (~2%), and liquidity not modelled.
-  Real Polymarket market makers update prices within seconds, not 60 seconds.
-  Entry filter (0.40–0.60) ensures near-neutral conditions but reduces trade count.
+*Execution delay: 3.0s | Market impact: 60% | Fill probability: 40%*
+
+### Daily P&L
+
+| Date | PnL | Cumulative |
+|------|-----|-----------|
+| 2026-02-04 | 🔴 $-13.53 | $-13.53 |
+| 2026-02-05 | 🟢 $+26.52 | $+12.98 |
+| 2026-02-24 | 🟢 $+13.08 | $+26.06 |
+| 2026-02-25 | 🟢 $+26.30 | $+52.36 |
+| 2026-02-28 | 🟢 $+14.15 | $+66.51 |
+| 2026-03-01 | 🟢 $+15.74 | $+82.26 |
+
+### Trade Log
+
+| # | Date | Min | Dir | Lagged | Fill | Edge→Fill | Conf | Binance% | Result | PnL |
+|---|------|-----|-----|--------|------|-----------|------|----------|--------|-----|
+| 1 | 2026-02-04 | 4 | UP | 0.403 | 0.485 | 0.137→0.055 | 0.68 | +0.396% | ❌ | $-13.5332 |
+| 2 | 2026-02-05 | 12 | UP | 0.432 | 0.514 | 0.137→0.055 | 0.84 | +0.691% | ✅ | $+15.8540 |
+| 3 | 2026-02-05 | 1 | UP | 0.500 | 0.543 | 0.071→0.028 | 0.63 | +0.712% | ✅ | $+10.6618 |
+| 4 | 2026-02-24 | 9 | DOWN | 0.442 | 0.510 | 0.113→0.045 | 0.68 | -0.549% | ✅ | $+13.0778 |
+| 5 | 2026-02-25 | 12 | DOWN | 0.426 | 0.494 | 0.114→0.046 | 0.60 | -0.396% | ✅ | $+12.2910 |
+| 6 | 2026-02-25 | 4 | UP | 0.407 | 0.487 | 0.133→0.053 | 0.67 | +0.401% | ✅ | $+14.0133 |
+| 7 | 2026-02-28 | 12 | DOWN | 0.408 | 0.488 | 0.133→0.053 | 0.67 | -0.413% | ✅ | $+14.1487 |
+| 8 | 2026-03-01 | 10 | UP | 0.408 | 0.494 | 0.144→0.058 | 0.77 | +0.520% | ✅ | $+15.7440 |
+
+### Direction Breakdown
+
+| Dir | Trades | Wins | Win% | PnL |
+|-----|--------|------|------|-----|
+| UP | 5 | 4 | 80.0% | $+42.74 |
+| DOWN | 3 | 3 | 100.0% | $+39.52 |
+
+---
+
+## Methodology Notes
+
+- **Price model:** Binary option (normal CDF). P(UP) = N(cumulative_return / σ_remaining).
+- **Lag model:** Polymarket price = fair value from `lag_secs` ago (default 60s).
+- **Market impact:** `fill_price = lagged_price + impact_pct × strat_edge`
+  Simulates other bots buying the same side before our order lands.
+- **Fill probability:** Bernoulli draw per signal. Missed fills still trigger cooldown.
+- **Entry filter:** 0.40–0.60 price range — genuine lag opportunity zone near window open.
+- **Cooldown:** 5 minutes between signals to avoid overtrading.
+- **Fees:** Not modelled. Polymarket charges ~2% maker/taker. Subtract from PnL.
+- **Small sample warning:** N<30 per scenario. Extend to 90+ days for reliable stats.
+- **Reproducibility:** Fixed random seed (42) per scenario for fill probability draws.
