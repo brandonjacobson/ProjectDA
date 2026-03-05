@@ -13,6 +13,8 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Optional
 
+from config.settings import ENTRY_PRICE_MIN, ENTRY_PRICE_MAX
+
 logger = logging.getLogger(__name__)
 
 
@@ -103,6 +105,13 @@ class OrderManager:
         confidence: float = 0.0,
     ) -> Optional[TradeRecord]:
         """Place a BUY order (paper or live)."""
+        if not (ENTRY_PRICE_MIN <= price <= ENTRY_PRICE_MAX):
+            logger.warning(
+                f"Order rejected — price {price:.4f} outside safe range "
+                f"[{ENTRY_PRICE_MIN}, {ENTRY_PRICE_MAX}] for {symbol} {direction}"
+            )
+            return None
+
         if token_id in self.positions and not self.positions[token_id].closed:
             logger.warning(f"Already have open position for {token_id}")
             return None

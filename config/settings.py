@@ -16,16 +16,19 @@ POLY_API_SECRET: str = os.getenv("POLY_API_SECRET", "")
 POLY_API_PASSPHRASE: str = os.getenv("POLY_API_PASSPHRASE", "")
 
 # --- WebSocket endpoints ---
-POLY_WS_URL: str = "wss://ws-live-data.polymarket.com"
-BINANCE_WS_URL: str = "wss://stream.binance.us:9443/stream"
+POLY_WS_URL: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+BINANCE_WS_URL: str = "wss://stream.binance.us:9443/ws"  # individual stream base
 
 # --- Markets to monitor ---
 SYMBOLS: list[str] = ["BTC", "ETH", "SOL"]
 
 # --- Strategy ---
-LAG_THRESHOLD_PCT: float = float(os.getenv("LAG_THRESHOLD_PCT", "0.003"))  # 0.3%
+LAG_THRESHOLD_PCT: float = float(os.getenv("LAG_THRESHOLD_PCT", "0.001"))  # 0.1% (lowered for pipeline testing)
 LAG_LOOKBACK_SECS: int = int(os.getenv("LAG_LOOKBACK_SECS", "60"))
-MIN_CONFIDENCE: float = float(os.getenv("MIN_CONFIDENCE", "0.6"))
+MIN_CONFIDENCE: float = float(os.getenv("MIN_CONFIDENCE", "0.64"))
+# Entry price safe range — reject signals outside this band (too close to 0 or 1 = illiquid extremes)
+ENTRY_PRICE_MIN: float = float(os.getenv("ENTRY_PRICE_MIN", "0.42"))
+ENTRY_PRICE_MAX: float = float(os.getenv("ENTRY_PRICE_MAX", "0.58"))
 
 # --- Risk ---
 PORTFOLIO_SIZE: float = float(os.getenv("PORTFOLIO_SIZE", "1000.0"))

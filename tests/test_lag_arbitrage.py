@@ -58,47 +58,47 @@ class TestSignalGeneration:
         assert signal.token_id == "btc_down"
 
     def test_confidence_is_between_0_and_1(self, strategy):
-        signal = strategy.evaluate("ETH", 0.01, {"eth_up": 0.35})
+        signal = strategy.evaluate("ETH", 0.01, {"eth_up": 0.45})
         assert signal is not None
         assert 0.0 <= signal.confidence <= 1.0
 
     def test_larger_move_gives_higher_confidence(self, strategy):
-        sig_small = strategy.evaluate("BTC", 0.004, {"btc_up": 0.40})
+        sig_small = strategy.evaluate("BTC", 0.004, {"btc_up": 0.44})
         # Reset cooldown
         strategy._signal_cooldown.clear()
-        sig_large = strategy.evaluate("BTC", 0.02, {"btc_up": 0.40})
+        sig_large = strategy.evaluate("BTC", 0.02, {"btc_up": 0.44})
         assert sig_small is not None
         assert sig_large is not None
         assert sig_large.confidence >= sig_small.confidence
 
     def test_signal_stores_binance_move(self, strategy):
-        signal = strategy.evaluate("SOL", 0.008, {"sol_up": 0.38})
+        signal = strategy.evaluate("SOL", 0.008, {"sol_up": 0.44})
         assert signal is not None
         assert abs(signal.binance_move_pct - 0.008) < 1e-9
 
     def test_signal_stores_poly_price(self, strategy):
-        signal = strategy.evaluate("SOL", 0.008, {"sol_up": 0.38})
+        signal = strategy.evaluate("SOL", 0.008, {"sol_up": 0.44})
         assert signal is not None
-        assert signal.poly_price == 0.38
+        assert signal.poly_price == 0.44
 
 
 class TestCooldown:
     def test_no_double_signal_within_cooldown(self, strategy):
-        sig1 = strategy.evaluate("BTC", 0.01, {"btc_up": 0.35})
-        sig2 = strategy.evaluate("BTC", 0.01, {"btc_up": 0.35})
+        sig1 = strategy.evaluate("BTC", 0.01, {"btc_up": 0.45})
+        sig2 = strategy.evaluate("BTC", 0.01, {"btc_up": 0.45})
         assert sig1 is not None
         assert sig2 is None  # blocked by cooldown
 
     def test_different_symbols_not_blocked_by_each_other(self, strategy):
-        sig_btc = strategy.evaluate("BTC", 0.01, {"btc_up": 0.35})
-        sig_eth = strategy.evaluate("ETH", 0.01, {"eth_up": 0.35})
+        sig_btc = strategy.evaluate("BTC", 0.01, {"btc_up": 0.45})
+        sig_eth = strategy.evaluate("ETH", 0.01, {"eth_up": 0.45})
         assert sig_btc is not None
         assert sig_eth is not None
 
     def test_signal_allowed_after_cooldown_expires(self, strategy):
         strategy.COOLDOWN_SECS = 0  # instant cooldown for test
-        sig1 = strategy.evaluate("BTC", 0.01, {"btc_up": 0.35})
-        sig2 = strategy.evaluate("BTC", 0.01, {"btc_up": 0.35})
+        sig1 = strategy.evaluate("BTC", 0.01, {"btc_up": 0.45})
+        sig2 = strategy.evaluate("BTC", 0.01, {"btc_up": 0.45})
         assert sig1 is not None
         assert sig2 is not None
 
@@ -107,6 +107,6 @@ class TestTokenIdUpdate:
     def test_update_token_ids(self, strategy):
         new_ids = {"BTC": {"up": "new_btc_up", "down": "new_btc_down"}}
         strategy.update_token_ids(new_ids)
-        signal = strategy.evaluate("BTC", 0.01, {"new_btc_up": 0.35})
+        signal = strategy.evaluate("BTC", 0.01, {"new_btc_up": 0.45})
         assert signal is not None
         assert signal.token_id == "new_btc_up"
