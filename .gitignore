@@ -3,4 +3,6 @@ venv/
 __pycache__/
 *.pyc
 logs/
-*.json.bak
+*.json.baktrades/paper_trades.csv
+trades/
+logs/
