@@ -21,6 +21,10 @@ jobs:
             set -e
             cd ~/ProjectDA
 
+            # Discard any modifications to tracked files (e.g. config drift on server).
+            # trades/ and logs/ are in .gitignore so they are untracked and untouched.
+            git checkout -- .
+
             # Pull latest code
             git pull --ff-only origin main
 
