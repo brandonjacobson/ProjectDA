@@ -17,12 +17,13 @@ def _signal_info(
     symbol="BTC", token_id="btc_up", direction="up",
     filter_reason="low_confidence", binance_move_pct=0.005,
     confidence=0.60, fair_value=0.56, edge=0.06, poly_price=0.50,
+    timestamp=None,
 ):
     return {
         "symbol": symbol, "token_id": token_id, "direction": direction,
         "filter_reason": filter_reason, "binance_move_pct": binance_move_pct,
         "confidence": confidence, "fair_value": fair_value, "edge": edge,
-        "poly_price": poly_price, "timestamp": time.time(),
+        "poly_price": poly_price, "timestamp": timestamp if timestamp is not None else time.time(),
     }
 
 
@@ -108,13 +109,29 @@ class TestShadowExitLogic:
         open_pos = [p for p in shadow_logger._positions if not p.closed]
         assert open_pos[0].token_id == "eth_up"
 
-    def test_multiple_positions_same_token(self, shadow_logger):
-        shadow_logger.log_rejected_signal(_signal_info(token_id="btc_up", poly_price=0.50))
-        shadow_logger.log_rejected_signal(_signal_info(token_id="btc_up", poly_price=0.52))
-        shadow_logger.update_price("btc_up", TAKE_PROFIT_THRESHOLD)
+    def test_multiple_signals_same_token_same_minute_deduped(self, shadow_logger):
+        # Second call for same token in same minute should be silently dropped
+        pos1 = shadow_logger.log_rejected_signal(_signal_info(token_id="btc_up", poly_price=0.50))
+        pos2 = shadow_logger.log_rejected_signal(_signal_info(token_id="btc_up", poly_price=0.52))
 
-        rows = _read_csv(shadow_logger)
-        assert len(rows) == 2  # both closed
+        assert pos1 is not None
+        assert pos2 is None  # deduped
+        assert shadow_logger.open_count == 1
+
+    def test_multiple_signals_same_token_different_minutes(self, shadow_logger):
+        # Signals in different minute buckets should both be recorded
+        ts_min1 = 1700000000.0   # minute bucket A
+        ts_min2 = 1700000060.0   # minute bucket B (60s later)
+        pos1 = shadow_logger.log_rejected_signal(
+            _signal_info(token_id="btc_up", poly_price=0.50, timestamp=ts_min1)
+        )
+        pos2 = shadow_logger.log_rejected_signal(
+            _signal_info(token_id="btc_up", poly_price=0.52, timestamp=ts_min2)
+        )
+
+        assert pos1 is not None
+        assert pos2 is not None
+        assert shadow_logger.open_count == 2
 
 
 class TestShadowExpiry:

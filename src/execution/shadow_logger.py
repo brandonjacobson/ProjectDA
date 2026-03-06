@@ -100,6 +100,8 @@ class ShadowLogger:
         self._csv_path = csv_path
         self._positions: list[ShadowPosition] = []
         self._counter: int = 0
+        # Dedup: token_id -> last minute-bucket (int(ts//60)) we logged a shadow entry
+        self._last_logged_minute: dict[str, int] = {}
         os.makedirs(os.path.dirname(csv_path), exist_ok=True)
         self._ensure_header()
 
@@ -107,7 +109,7 @@ class ShadowLogger:
     # Public API
     # ------------------------------------------------------------------
 
-    def log_rejected_signal(self, shadow_info: dict) -> ShadowPosition:
+    def log_rejected_signal(self, shadow_info: dict) -> Optional[ShadowPosition]:
         """
         Create a shadow position from a rejected signal dict.
 
@@ -115,9 +117,17 @@ class ShadowLogger:
             symbol, token_id, direction, filter_reason,
             binance_move_pct, confidence (optional), fair_value (optional),
             edge (optional), poly_price
+
+        At most one shadow entry is created per unique token_id per minute.
+        Returns None (silently) if this market was already logged this minute.
         """
-        self._counter += 1
         ts = shadow_info.get("timestamp", time.time())
+        token_id = shadow_info["token_id"]
+        minute_bucket = int(ts // 60)
+        if self._last_logged_minute.get(token_id) == minute_bucket:
+            return None
+        self._last_logged_minute[token_id] = minute_bucket
+        self._counter += 1
         shadow_id = f"SHADOW-{int(ts)}-{self._counter:04d}"
 
         pos = ShadowPosition(

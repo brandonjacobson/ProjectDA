@@ -77,7 +77,7 @@ class LagArbitrageStrategy:
 
         # Per-symbol diagnostic state — updated on every evaluate() call
         self._diag: dict[str, dict] = {}
-        self._last_status_time: float = 0.0
+        self._last_status_time: dict[str, float] = {}  # symbol -> last log time
 
         # Shadow mode: populated when a meaningful signal is rejected (gates 6-8
         # or main.py filters). Reset to None at the start of each evaluate().
@@ -127,7 +127,7 @@ class LagArbitrageStrategy:
         def _finish(result: str) -> None:
             diag["result"] = result
             self._diag[symbol] = diag
-            self._maybe_log_status(poly_prices)
+            self._maybe_log_status(symbol)
 
         # --- Gate 1: Binance data available ---
         if binance_move_pct is None:
@@ -232,26 +232,29 @@ class LagArbitrageStrategy:
     # Periodic verbose status logging
     # ------------------------------------------------------------------
 
-    def _maybe_log_status(self, poly_prices: dict) -> None:
-        """Emit full status log if STATUS_INTERVAL_SECS have passed."""
+    def _maybe_log_status(self, symbol: str) -> None:
+        """Emit per-symbol diagnostic block at most once per STATUS_INTERVAL_SECS."""
         now = time.time()
-        if now - self._last_status_time < self.STATUS_INTERVAL_SECS:
+        if now - self._last_status_time.get(symbol, 0.0) < self.STATUS_INTERVAL_SECS:
             return
-        # Only emit when we have data for at least one symbol
-        if not self._diag:
+        if symbol not in self._diag:
             return
-        self._last_status_time = now
-        self._log_status()
+        self._last_status_time[symbol] = now
+        self._log_status(symbol)
 
-    def _log_status(self) -> None:
-        """Format and emit the per-symbol evaluation diagnostic block."""
+    def _log_status(self, symbol: str) -> None:
+        """Format and emit the diagnostic block for a single symbol."""
+        d = self._diag.get(symbol)
+        if d is None:
+            return
+
         ts = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
         sep = "─" * 72
 
         lines = [
             "",
             sep,
-            f"  STRATEGY STATUS  {ts}",
+            f"  LAG ARBIT DIAGNOSTIC  {symbol}  {ts}",
             f"  Threshold: ±{self.threshold_pct:.3%}  "
             f"Lookback: {self.lookback_secs}s  "
             f"Min confidence: {self.min_confidence:.2f}  "
@@ -259,55 +262,46 @@ class LagArbitrageStrategy:
             sep,
         ]
 
-        for symbol in SYMBOLS_ORDER:
-            d = self._diag.get(symbol)
-            if d is None:
-                lines.append(f"  {symbol:<4}  (no data yet)")
-                continue
+        # Line 1: Binance price + momentum
+        spot = d["binance_price"]
+        move = d["binance_move_pct"]
+        spot_str = f"${spot:>10,.2f}" if spot is not None else "         N/A"
+        move_str = f"{move:>+8.3%}" if move is not None else "      N/A"
+        thresh_arrow = (
+            "✓ PASS" if move is not None and abs(move) >= self.threshold_pct
+            else "✗ FAIL"
+        )
+        lines.append(
+            f"  {symbol:<4}  spot={spot_str}  "
+            f"momentum={move_str} (60s)  threshold={thresh_arrow}"
+        )
 
-            # Line 1: Binance price + momentum
-            spot = d["binance_price"]
-            move = d["binance_move_pct"]
-            spot_str = f"${spot:>10,.2f}" if spot is not None else "         N/A"
-            move_str = f"{move:>+8.3%}" if move is not None else "      N/A"
-            thresh_arrow = (
-                "✓ PASS" if move is not None and abs(move) >= self.threshold_pct
-                else "✗ FAIL"
-            )
+        # Line 2: Polymarket prices
+        up_p = d["poly_up"]
+        dn_p = d["poly_down"]
+        up_str = f"{up_p:.3f}" if up_p is not None else "  N/A"
+        dn_str = f"{dn_p:.3f}" if dn_p is not None else "  N/A"
+        lines.append(f"        poly UP={up_str}  poly DOWN={dn_str}")
+
+        # Line 3: Edge / confidence (only when we got that far)
+        fv        = d["fair_value"]
+        edge      = d["edge"]
+        conf      = d["confidence"]
+        direction = d["direction"]
+        if fv is not None:
+            dir_str  = direction.upper() if direction else "?"
+            conf_str = f"{conf:.2f}" if conf is not None else " N/A"
             lines.append(
-                f"  {symbol:<4}  spot={spot_str}  "
-                f"momentum={move_str} (60s)  threshold={thresh_arrow}"
+                f"        direction={dir_str}  "
+                f"fair={fv:.3f}  edge={edge:+.3f}  conf={conf_str}"
             )
 
-            # Line 2: Polymarket prices
-            up_p = d["poly_up"]
-            dn_p = d["poly_down"]
-            up_str  = f"{up_p:.3f}" if up_p  is not None else "  N/A"
-            dn_str  = f"{dn_p:.3f}" if dn_p  is not None else "  N/A"
-            lines.append(
-                f"        poly UP={up_str}  poly DOWN={dn_str}"
-            )
-
-            # Line 3: Edge / confidence (only when we got that far)
-            fv   = d["fair_value"]
-            edge = d["edge"]
-            conf = d["confidence"]
-            direction = d["direction"]
-            if fv is not None:
-                dir_str  = direction.upper() if direction else "?"
-                conf_str = f"{conf:.2f}" if conf is not None else " N/A"
-                lines.append(
-                    f"        direction={dir_str}  "
-                    f"fair={fv:.3f}  edge={edge:+.3f}  conf={conf_str}"
-                )
-
-            # Line 4: Overall result
-            result = d.get("result", "pending")
-            marker = "🟢 SIGNAL FIRED" if result == "SIGNAL" else f"🔴 {result}"
-            lines.append(f"        → {marker}")
-            lines.append("")
-
+        # Line 4: Overall result
+        result = d.get("result", "pending")
+        marker = "🟢 SIGNAL FIRED" if result == "SIGNAL" else f"🔴 {result}"
+        lines.append(f"        → {marker}")
         lines.append(sep)
+
         logger.info("\n".join(lines))
 
     def update_token_ids(self, token_ids: dict[str, dict[str, str]]) -> None:
