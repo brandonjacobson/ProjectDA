@@ -250,6 +250,7 @@ class Backtester:
         market_impact_pct: float = 0.0,
         fill_probability: float = 1.0,
         random_seed: int = 42,
+        disable_premove_guard: bool = False,
         # Fees
         fee_entry_pct: float = 0.02,   # 2% on USDC spent at entry
         fee_exit_pct: float = 0.02,    # 2% on payout received at exit
@@ -267,6 +268,7 @@ class Backtester:
         self.random_seed = random_seed
         self.fee_entry_pct = fee_entry_pct
         self.fee_exit_pct = fee_exit_pct
+        self.disable_premove_guard = disable_premove_guard
 
     def run(
         self,
@@ -373,7 +375,8 @@ class Backtester:
                 edge = fair_value_strat - entry_lagged
 
                 # Only trade near-neutral markets — real lag opportunity zone
-                if edge <= 0 or not (0.40 <= entry_lagged <= 0.60):
+                neutral_ok = (0.40 <= entry_lagged <= 0.60)
+                if edge <= 0 or (not self.disable_premove_guard and not neutral_ok):
                     continue
 
                 move_conf = min(abs(move_1m) / (self.threshold_pct * 3), 1.0)
