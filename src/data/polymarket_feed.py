@@ -189,6 +189,15 @@ class PolymarketFeed:
                     f"[POLY TICK] token={token_id[:16]}…  "
                     f"bid={best_bid:.4f}  ask={best_ask:.4f}  mid={mid:.4f}"
                 )
+                # Evaluate stop-loss/take-profit on every tick (not just book snapshots)
+                if self.on_book_update:
+                    await self._safe_callback(
+                        self.on_book_update,
+                        token_id=token_id,
+                        bids=[],
+                        asks=[],
+                        mid=mid,
+                    )
                 if old_price is not None and old_price != mid and self.on_price_change:
                     await self._safe_callback(
                         self.on_price_change,

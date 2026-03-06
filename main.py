@@ -173,6 +173,14 @@ class Bot:
             })
             return
 
+        # Require live WS price confirmation — reject if only Gamma-seeded
+        if self.polymarket.last_update.get(signal.token_id) is None:
+            logger.warning(
+                f"[{signal.symbol}] Skipping {signal.direction.upper()} — no live WS price yet "
+                f"(only Gamma seed). Waiting for first book event."
+            )
+            return
+
         # Place order
         record = await self.order_manager.place_order(
             token_id=signal.token_id,
