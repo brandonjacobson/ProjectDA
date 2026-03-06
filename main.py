@@ -324,10 +324,20 @@ class Bot:
                                 token_ids[sym] = sym_tokens
 
                                 # Seed polymarket prices so strategy has real numbers
-                                # before the first WS book event arrives
+                                # before the first WS book event arrives.
+                                # IMPORTANT: never overwrite a live WS price — only
+                                # seed tokens that have no last_update entry yet.
+                                # Overwriting would corrupt the live price while
+                                # last_update remains non-None, bypassing the guard.
                                 for i, outcome in enumerate(raw_outcomes):
                                     if i < len(raw_ids) and i < len(raw_prices):
                                         tid = raw_ids[i]
+                                        if tid in self.polymarket.last_update:
+                                            logger.debug(
+                                                f"Skip Gamma reseed {sym} {str(outcome).upper()} "
+                                                f"— live WS price exists (token {tid[:12]}…)"
+                                            )
+                                            continue
                                         p = float(raw_prices[i])
                                         self.polymarket.prices[tid] = p
                                         logger.info(
