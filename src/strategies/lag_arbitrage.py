@@ -79,6 +79,10 @@ class LagArbitrageStrategy:
         self._diag: dict[str, dict] = {}
         self._last_status_time: float = 0.0
 
+        # Shadow mode: populated when a meaningful signal is rejected (gates 6-8
+        # or main.py filters). Reset to None at the start of each evaluate().
+        self.last_shadow: Optional[dict] = None
+
     def evaluate(
         self,
         symbol: str,
@@ -95,6 +99,8 @@ class LagArbitrageStrategy:
             poly_prices: mapping of token_id -> current Polymarket price
             binance_price: raw spot price (for status logging only)
         """
+        self.last_shadow = None  # reset each call
+
         # --- Build diagnostic record for this symbol ---
         diag: dict = {
             "symbol": symbol,
@@ -162,6 +168,13 @@ class LagArbitrageStrategy:
                 f"FAIL: poly_price {poly_price:.3f} outside safe range "
                 f"[{ENTRY_PRICE_MIN},{ENTRY_PRICE_MAX}]"
             )
+            self.last_shadow = {
+                "symbol": symbol, "token_id": token_id, "direction": direction,
+                "filter_reason": "entry_price_range",
+                "binance_move_pct": binance_move_pct,
+                "confidence": None, "fair_value": None, "edge": None,
+                "poly_price": poly_price, "timestamp": diag["ts"],
+            }
             return None
 
         # --- Gate 7: Edge calculation ---
@@ -174,6 +187,13 @@ class LagArbitrageStrategy:
 
         if edge <= 0:
             _finish(f"FAIL: no edge (fair={fair_value:.3f} poly={poly_price:.3f} edge={edge:+.3f})")
+            self.last_shadow = {
+                "symbol": symbol, "token_id": token_id, "direction": direction,
+                "filter_reason": "no_edge",
+                "binance_move_pct": binance_move_pct,
+                "confidence": None, "fair_value": fair_value, "edge": edge,
+                "poly_price": poly_price, "timestamp": diag["ts"],
+            }
             return None
 
         # --- Gate 8: Confidence ---
@@ -184,6 +204,13 @@ class LagArbitrageStrategy:
 
         if confidence < self.min_confidence:
             _finish(f"FAIL: confidence {confidence:.2f} < min {self.min_confidence:.2f}")
+            self.last_shadow = {
+                "symbol": symbol, "token_id": token_id, "direction": direction,
+                "filter_reason": "low_confidence",
+                "binance_move_pct": binance_move_pct,
+                "confidence": confidence, "fair_value": fair_value, "edge": edge,
+                "poly_price": poly_price, "timestamp": diag["ts"],
+            }
             return None
 
         # --- All gates passed → SIGNAL ---

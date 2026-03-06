@@ -40,6 +40,7 @@ from src.execution.order_manager import OrderManager
 from src.risk.risk_engine import RiskEngine
 from src.monitoring.alerts import AlertManager
 from src.monitoring.dashboard import Dashboard
+from src.execution.shadow_logger import ShadowLogger
 
 
 class Bot:
@@ -90,6 +91,11 @@ class Bot:
             on_book_update=self._on_poly_book,
         )
 
+        # Shadow mode — tracks rejected signals and their hypothetical outcomes
+        self.shadow_logger = ShadowLogger(
+            csv_path=os.path.join(settings.TRADES_DIR, "shadow_trades.csv")
+        )
+
         # Wire kill-switch → alert
         self.risk.on_kill_switch(self._on_kill_switch)
 
@@ -115,6 +121,9 @@ class Bot:
             binance_price=price,
         )
         if signal is None:
+            # Capture shadow signal if strategy rejected a meaningful candidate
+            if self.strategy.last_shadow:
+                self.shadow_logger.log_rejected_signal(self.strategy.last_shadow)
             return
 
         # Pre-trade sanity check: refuse entries outside the genuine uncertainty zone.
@@ -127,6 +136,18 @@ class Bot:
                 f"safe range [0.35, 0.65] for {signal.symbol} {signal.direction.upper()}. "
                 f"Market may be nearly resolved. Skipping."
             )
+            self.shadow_logger.log_rejected_signal({
+                "symbol": signal.symbol,
+                "token_id": signal.token_id,
+                "direction": signal.direction,
+                "filter_reason": "main_price_range",
+                "binance_move_pct": signal.binance_move_pct,
+                "confidence": signal.confidence,
+                "fair_value": None,
+                "edge": None,
+                "poly_price": signal.poly_price,
+                "timestamp": signal.timestamp,
+            })
             return
 
         # Risk check
@@ -138,6 +159,18 @@ class Bot:
         )
         if not allowed:
             logger.info(f"Trade blocked by risk: {reason}")
+            self.shadow_logger.log_rejected_signal({
+                "symbol": signal.symbol,
+                "token_id": signal.token_id,
+                "direction": signal.direction,
+                "filter_reason": f"risk:{reason}",
+                "binance_move_pct": signal.binance_move_pct,
+                "confidence": signal.confidence,
+                "fair_value": None,
+                "edge": None,
+                "poly_price": signal.poly_price,
+                "timestamp": signal.timestamp,
+            })
             return
 
         # Place order
@@ -157,6 +190,7 @@ class Bot:
     async def _on_poly_book(self, token_id: str, bids, asks, mid: float) -> None:
         """Update open position prices from Polymarket order book."""
         self.order_manager.update_price(token_id, mid)
+        self.shadow_logger.update_price(token_id, mid)
 
         # Simple exit logic: close if market price moves against us heavily
         pos = self.order_manager.positions.get(token_id)
@@ -381,6 +415,7 @@ class Bot:
 
     async def shutdown(self) -> None:
         logger.info("Shutting down...")
+        self.shadow_logger.expire_all()
         await self.binance.stop()
         await self.polymarket.stop()
         self.dashboard.stop()
