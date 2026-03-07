@@ -1,8 +1,16 @@
+# --- Secrets — never commit any .env variant ---
 .env
+.env.*
+!.env.example
+
+# --- Python ---
 venv/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+
+# --- Logs and trade data ---
 logs/
-*.json.baktrades/paper_trades.csv
 trades/
-logs/
+*.json.bak
